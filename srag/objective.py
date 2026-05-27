@@ -1,5 +1,7 @@
 """Weighted coverage utility f(S) and marginal gain (Eq. 4 & 8 from paper)."""
 
+from math import fsum
+
 from .types import ConceptUniverse, Document
 
 
@@ -13,14 +15,14 @@ class WeightedCoverageObjective:
         for doc in selected:
             concepts = self.universe.doc_concepts.get(doc.doc_id, set())
             covered |= concepts
-        return sum(
+        return fsum(
             self.universe.concept_weights.get(u, 0.0) for u in covered
         )
 
     def marginal_gain(self, doc: Document, covered: set) -> float:
         doc_concepts = self.universe.doc_concepts.get(doc.doc_id, set())
         new_concepts = doc_concepts - covered
-        return sum(
+        return fsum(
             self.universe.concept_weights.get(u, 0.0) for u in new_concepts
         )
 
