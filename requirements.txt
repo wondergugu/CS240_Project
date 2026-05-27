@@ -1,0 +1,14 @@
+# Runtime dependency used by srag/concepts.py and setup_nltk.py:
+# - nltk.word_tokenize
+# - nltk.pos_tag
+# - nltk.corpus.stopwords
+# - nltk.corpus.wordnet
+# - nltk.stem.WordNetLemmatizer
+nltk==3.9.4
+
+# Test runner used for the test modules under tests/.
+pytest==9.0.3
+
+# After installation, run `python3 setup_nltk.py` to download the NLTK data
+# resources required by the runtime dependency:
+# punkt_tab, averaged_perceptron_tagger_eng, wordnet, and stopwords.
