@@ -1,29 +1,35 @@
-"""Greedy (Rel/Cost) baseline: select by relevance per token."""
+"""Greedy relevance-per-token baseline from the paper's comparisons."""
 
 from ..types import Document
+from ..utils import validate_budget, validate_candidates
 
 
 class GreedyRelCostSelector:
-
     def select(
         self, candidates: list[Document], budget: int
     ) -> list[Document]:
-        remaining = list(candidates)
-        selected = []
+        validate_budget(budget)
+        remaining = validate_candidates(candidates)
+        selected: list[Document] = []
         used = 0
-        while remaining:
-            best = None
-            best_density = -1.0
-            for doc in remaining:
-                if used + doc.token_count > budget:
-                    continue
-                density = doc.relevance_score / doc.token_count
-                if density > best_density:
-                    best_density = density
-                    best = doc
-            if best is None:
-                break
+
+        while True:
+            feasible = [
+                doc
+                for doc in remaining
+                if used + doc.token_count <= budget
+            ]
+            if not feasible:
+                return selected
+
+            best = min(
+                feasible,
+                key=lambda doc: (
+                    -(doc.relevance_score / doc.token_count),
+                    -doc.relevance_score,
+                    doc.doc_id,
+                ),
+            )
             selected.append(best)
             used += best.token_count
             remaining.remove(best)
-        return selected

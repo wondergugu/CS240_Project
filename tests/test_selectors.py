@@ -1,15 +1,24 @@
 import random
 from itertools import combinations
+from math import e
 
-from srag.types import Document, ConceptUniverse
+import pytest
+
 from srag.objective import WeightedCoverageObjective
-from srag.selectors import TopKSelector, MMRSelector, GreedyRelCostSelector, SRAGSelector
+from srag.selectors import (
+    GreedyRelCostSelector,
+    MMRSelector,
+    SRAGSelector,
+    TopKSelector,
+)
+from srag.types import ConceptUniverse, Document
+from srag.utils import total_cost
 
 
 def _make_test_data(n_docs=20, n_concepts=30, budget=500, seed=42):
     rng = random.Random(seed)
     concepts = {f"c{i}" for i in range(n_concepts)}
-    weights = {c: rng.uniform(0.1, 1.0) for c in concepts}
+    weights = {concept: rng.uniform(0.1, 1.0) for concept in concepts}
     docs = []
     doc_concepts = {}
     for i in range(n_docs):
@@ -22,73 +31,115 @@ def _make_test_data(n_docs=20, n_concepts=30, budget=500, seed=42):
         )
         docs.append(doc)
         n_covered = rng.randint(2, 8)
-        doc_concepts[doc.doc_id] = set(rng.sample(sorted(concepts), n_covered))
+        doc_concepts[doc.doc_id] = set(
+            rng.sample(sorted(concepts), n_covered)
+        )
     universe = ConceptUniverse(
-        concepts=concepts, concept_weights=weights, doc_concepts=doc_concepts
+        concepts=concepts,
+        concept_weights=weights,
+        doc_concepts=doc_concepts,
     )
     return docs, universe, budget
 
 
-def test_topk_budget_constraint():
+@pytest.mark.parametrize(
+    "make_selector",
+    [
+        lambda universe: TopKSelector(),
+        lambda universe: MMRSelector(universe, lam=0.6),
+        lambda universe: GreedyRelCostSelector(),
+        lambda universe: SRAGSelector(universe),
+    ],
+)
+def test_selectors_obey_budget(make_selector):
     docs, universe, budget = _make_test_data()
-    selector = TopKSelector()
-    selected = selector.select(docs, budget)
-    total_cost = sum(d.token_count for d in selected)
-    assert total_cost <= budget
-    assert len(selected) > 0
+    selected = make_selector(universe).select(docs, budget)
+    assert total_cost(selected) <= budget
+    assert selected
 
 
-def test_mmr_budget_constraint():
-    docs, universe, budget = _make_test_data()
-    selector = MMRSelector(universe, lam=0.6)
-    selected = selector.select(docs, budget)
-    total_cost = sum(d.token_count for d in selected)
-    assert total_cost <= budget
-    assert len(selected) > 0
+def test_mmr_rejects_invalid_lambda():
+    _, universe, _ = _make_test_data()
+    with pytest.raises(ValueError, match="lam"):
+        MMRSelector(universe, lam=1.1)
 
 
-def test_greedy_relcost_budget_constraint():
-    docs, universe, budget = _make_test_data()
-    selector = GreedyRelCostSelector()
-    selected = selector.select(docs, budget)
-    total_cost = sum(d.token_count for d in selected)
-    assert total_cost <= budget
-    assert len(selected) > 0
+def test_selectors_reject_invalid_budget_and_duplicate_ids():
+    docs, universe, _ = _make_test_data(n_docs=2)
+    with pytest.raises(ValueError, match="budget"):
+        SRAGSelector(universe).select(docs, -1)
+    with pytest.raises(ValueError, match="duplicate document id"):
+        TopKSelector().select([docs[0], docs[0]], 1000)
 
 
-def test_srag_budget_constraint():
-    docs, universe, budget = _make_test_data()
-    selector = SRAGSelector(universe)
-    selected = selector.select(docs, budget)
-    total_cost = sum(d.token_count for d in selected)
-    assert total_cost <= budget
-    assert len(selected) > 0
+def test_srag_lazy_matches_naive_density_greedy():
+    docs, universe, budget = _make_test_data(seed=19)
+    lazy = SRAGSelector(universe, use_lazy=True).select(docs, budget)
+    naive = SRAGSelector(universe, use_lazy=False).select(docs, budget)
+    assert [doc.doc_id for doc in lazy] == [doc.doc_id for doc in naive]
 
 
-def test_srag_approximation_guarantee():
-    """On small instances, verify S-RAG achieves >= (1-1/e) * OPT."""
-    docs, universe, budget = _make_test_data(n_docs=8, n_concepts=15, budget=400, seed=99)
-    obj = WeightedCoverageObjective(universe)
-
-    # Brute-force optimal
-    best_val = 0.0
-    for size in range(1, len(docs) + 1):
-        for combo in combinations(docs, size):
-            cost = sum(d.token_count for d in combo)
-            if cost > budget:
-                continue
-            val = obj.evaluate(list(combo))
-            if val > best_val:
-                best_val = val
-
-    selector = SRAGSelector(universe, use_lazy=False)
-    selected = selector.select(docs, budget)
-    srag_val = obj.evaluate(selected)
-
-    ratio = srag_val / best_val if best_val > 0 else 1.0
-    assert ratio >= (1 - 1 / 2.718) - 0.01, (
-        f"Approximation ratio {ratio:.3f} below (1-1/e)={1-1/2.718:.3f}"
+def test_srag_theoretical_variant_reaches_observed_bound_on_small_instance():
+    docs, universe, budget = _make_test_data(
+        n_docs=8, n_concepts=15, budget=400, seed=99
     )
+    objective = WeightedCoverageObjective(universe)
+
+    optimum = 0.0
+    for size in range(len(docs) + 1):
+        for candidate in combinations(docs, size):
+            if total_cost(candidate) <= budget:
+                optimum = max(optimum, objective.evaluate(candidate))
+
+    selected = SRAGSelector(universe, use_lazy=False).select_theoretical(
+        docs, budget
+    )
+    ratio = objective.evaluate(selected) / optimum if optimum else 1.0
+    assert ratio >= (1 - 1 / e) - 1e-12
+
+
+def test_theoretical_variant_enumerates_size_three_seeds():
+    concepts = {f"c{i}" for i in range(14)}
+    weights = {concept: 1.0 for concept in concepts}
+    docs = [
+        Document("decoy", "decoy", 1.0, 4),
+        Document("a", "a", 0.8, 3),
+        Document("b", "b", 0.7, 3),
+        Document("c", "c", 0.6, 3),
+    ]
+    universe = ConceptUniverse(
+        concepts=concepts,
+        concept_weights=weights,
+        doc_concepts={
+            "decoy": {"c0", "c1", "c2", "c3", "c4"},
+            "a": {"c5", "c6", "c7"},
+            "b": {"c8", "c9", "c10"},
+            "c": {"c11", "c12", "c13"},
+        },
+    )
+    objective = WeightedCoverageObjective(universe)
+    selector = SRAGSelector(universe, use_lazy=False)
+
+    fast = selector.select(docs, budget=9)
+    theoretical = selector.select_theoretical(docs, budget=9)
+
+    assert objective.evaluate(fast) == 8.0
+    assert objective.evaluate(theoretical) == 9.0
+    assert {doc.doc_id for doc in theoretical} == {"a", "b", "c"}
+
+
+def test_theoretical_variant_considers_best_size_two_solution():
+    docs = [
+        Document("a", "a", 0.9, 5),
+        Document("b", "b", 0.8, 5),
+    ]
+    universe = ConceptUniverse(
+        concepts={"a", "b"},
+        concept_weights={"a": 1.0, "b": 2.0},
+        doc_concepts={"a": {"a"}, "b": {"b"}},
+    )
+    selected = SRAGSelector(universe).select_theoretical(docs, budget=10)
+    assert {doc.doc_id for doc in selected} == {"a", "b"}
 
 
 def test_srag_deterministic():
@@ -96,39 +147,36 @@ def test_srag_deterministic():
     selector = SRAGSelector(universe)
     result1 = selector.select(docs, budget)
     result2 = selector.select(docs, budget)
-    assert [d.doc_id for d in result1] == [d.doc_id for d in result2]
+    assert [doc.doc_id for doc in result1] == [doc.doc_id for doc in result2]
 
 
 def test_srag_outperforms_topk_on_redundant_data():
-    """When top docs are redundant, S-RAG should achieve higher coverage."""
-    rng = random.Random(777)
     concepts = {f"c{i}" for i in range(20)}
-    weights = {c: 1.0 for c in concepts}
+    weights = {concept: 1.0 for concept in concepts}
     docs = []
     doc_concepts = {}
 
-    # Top 5 docs all cover the same concepts (redundant)
     shared = {"c0", "c1", "c2", "c3", "c4"}
     for i in range(5):
         doc = Document(f"d{i}", f"doc {i}", 0.95 - i * 0.01, 100)
         docs.append(doc)
         doc_concepts[doc.doc_id] = shared.copy()
 
-    # Lower-ranked docs cover unique concepts
     for i in range(5, 15):
         doc = Document(f"d{i}", f"doc {i}", 0.5 - i * 0.01, 80)
         docs.append(doc)
-        doc_concepts[doc.doc_id] = {f"c{i}", f"c{i+1}" if i + 1 < 20 else "c0"}
+        doc_concepts[doc.doc_id] = {
+            f"c{i}",
+            f"c{i + 1}" if i + 1 < 20 else "c0",
+        }
 
     universe = ConceptUniverse(
-        concepts=concepts, concept_weights=weights, doc_concepts=doc_concepts
+        concepts=concepts,
+        concept_weights=weights,
+        doc_concepts=doc_concepts,
     )
-    budget = 400
-    obj = WeightedCoverageObjective(universe)
+    objective = WeightedCoverageObjective(universe)
 
-    topk_selected = TopKSelector().select(docs, budget)
-    srag_selected = SRAGSelector(universe).select(docs, budget)
-
-    topk_val = obj.evaluate(topk_selected)
-    srag_val = obj.evaluate(srag_selected)
-    assert srag_val >= topk_val
+    topk = TopKSelector().select(docs, budget=400)
+    srag = SRAGSelector(universe).select(docs, budget=400)
+    assert objective.evaluate(srag) >= objective.evaluate(topk)

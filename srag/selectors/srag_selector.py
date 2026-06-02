@@ -1,19 +1,20 @@
-"""S-RAG selector: density-greedy with lazy evaluation (Algorithm 1).
+"""S-RAG selection algorithms for weighted coverage under a token budget.
 
-Two variants:
-- Fast: pure density-greedy (no partial enumeration), used in practice
-- Full: partial enumeration over size-3 seeds + density-greedy completion
+`select` implements the fast density-greedy system variant described in
+Section 4.1. `select_theoretical` implements Algorithm 1: best feasible
+solution of size at most two plus every feasible size-three seed followed by
+density-greedy completion.
 """
 
 import heapq
 from itertools import combinations
 
-from ..types import Document, ConceptUniverse
 from ..objective import WeightedCoverageObjective
+from ..types import ConceptUniverse, Document
+from ..utils import total_cost, validate_budget, validate_candidates
 
 
 class SRAGSelector:
-
     def __init__(self, universe: ConceptUniverse, use_lazy: bool = True):
         self.universe = universe
         self.objective = WeightedCoverageObjective(universe)
@@ -22,38 +23,68 @@ class SRAGSelector:
     def select(
         self, candidates: list[Document], budget: int
     ) -> list[Document]:
-        return self._density_greedy(candidates, budget)
+        """Run the fast practical density-greedy variant."""
+        documents = self._prepare(candidates, budget)
+        return self._density_greedy(documents, budget)
+
+    def select_theoretical(
+        self, candidates: list[Document], budget: int
+    ) -> list[Document]:
+        """Run the partial-enumeration algorithm stated as Algorithm 1."""
+        documents = self._prepare(candidates, budget)
+        feasible = [doc for doc in documents if doc.token_count <= budget]
+        best = self._best_small_solution(feasible, budget)
+
+        for seed in combinations(feasible, 3):
+            if total_cost(seed) > budget:
+                continue
+            completed = self._density_greedy(
+                documents, budget, initial=list(seed)
+            )
+            best = self._better_solution(best, completed)
+        return best
 
     def select_full(
-        self, candidates: list[Document], budget: int, max_seed_size: int = 3
+        self, candidates: list[Document], budget: int
     ) -> list[Document]:
-        """Theoretical variant with partial enumeration (Algorithm 1)."""
-        best_solution = []
-        best_value = 0.0
+        """Backward-compatible name for the theoretical Algorithm 1 variant."""
+        return self.select_theoretical(candidates, budget)
 
-        feasible = [d for d in candidates if d.token_count <= budget]
+    def _prepare(
+        self, candidates: list[Document], budget: int
+    ) -> list[Document]:
+        validate_budget(budget)
+        return validate_candidates(candidates)
 
-        for size in range(1, min(max_seed_size + 1, 3)):
-            for seed in combinations(feasible, size):
-                seed_cost = sum(d.token_count for d in seed)
-                if seed_cost > budget:
-                    continue
-                seed_list = list(seed)
-                remaining = [d for d in candidates if d not in seed]
-                completed = self._density_greedy(
-                    remaining, budget, initial=seed_list
-                )
-                val = self.objective.evaluate(completed)
-                if val > best_value:
-                    best_value = val
-                    best_solution = completed
+    def _best_small_solution(
+        self, candidates: list[Document], budget: int
+    ) -> list[Document]:
+        best: list[Document] = []
+        for size in (1, 2):
+            for candidate in combinations(candidates, size):
+                if total_cost(candidate) <= budget:
+                    best = self._better_solution(best, list(candidate))
+        return best
 
-        greedy_only = self._density_greedy(candidates, budget)
-        greedy_val = self.objective.evaluate(greedy_only)
-        if greedy_val > best_value:
-            best_solution = greedy_only
+    def _better_solution(
+        self, current: list[Document], candidate: list[Document]
+    ) -> list[Document]:
+        current_value = self.objective.evaluate(current)
+        candidate_value = self.objective.evaluate(candidate)
+        if candidate_value > current_value:
+            return candidate
+        if candidate_value < current_value:
+            return current
 
-        return best_solution
+        current_key = (
+            total_cost(current),
+            tuple(sorted(doc.doc_id for doc in current)),
+        )
+        candidate_key = (
+            total_cost(candidate),
+            tuple(sorted(doc.doc_id for doc in candidate)),
+        )
+        return candidate if candidate_key < current_key else current
 
     def _density_greedy(
         self,
@@ -71,31 +102,32 @@ class SRAGSelector:
         budget: int,
         initial: list[Document] | None = None,
     ) -> list[Document]:
-        selected = list(initial) if initial else []
-        used = sum(d.token_count for d in selected)
+        selected = list(initial or [])
+        used = total_cost(selected)
         covered = self.objective.covered_concepts(selected)
-        remaining = [d for d in candidates if d not in selected]
+        selected_ids = {doc.doc_id for doc in selected}
+        remaining = [
+            doc for doc in candidates if doc.doc_id not in selected_ids
+        ]
 
-        while remaining:
-            best = None
-            best_density = -1.0
+        while True:
+            scored: list[tuple[float, str, Document]] = []
             for doc in remaining:
                 if used + doc.token_count > budget:
                     continue
                 gain = self.objective.marginal_gain(doc, covered)
-                if gain <= 0:
-                    continue
-                density = gain / doc.token_count
-                if density > best_density:
-                    best_density = density
-                    best = doc
-            if best is None:
-                break
+                if gain > 0:
+                    scored.append((-(gain / doc.token_count), doc.doc_id, doc))
+            if not scored:
+                return selected
+
+            _, _, best = min(scored)
             selected.append(best)
             used += best.token_count
-            covered |= self.universe.doc_concepts.get(best.doc_id, set())
+            covered |= self.universe.doc_concepts.get(
+                best.doc_id, frozenset()
+            )
             remaining.remove(best)
-        return selected
 
     def _density_greedy_lazy(
         self,
@@ -103,48 +135,40 @@ class SRAGSelector:
         budget: int,
         initial: list[Document] | None = None,
     ) -> list[Document]:
-        """Density-greedy with lazy evaluation (Minoux 1978)."""
-        selected = list(initial) if initial else []
-        used = sum(d.token_count for d in selected)
+        """Use diminishing-return upper bounds for lazy marginal evaluation."""
+        selected = list(initial or [])
+        used = total_cost(selected)
         covered = self.objective.covered_concepts(selected)
-        selected_ids = {d.doc_id for d in selected}
+        selected_ids = {doc.doc_id for doc in selected}
 
-        heap = []
+        heap: list[tuple[float, str, Document]] = []
         for doc in candidates:
-            if doc.doc_id in selected_ids:
-                continue
-            if doc.token_count > budget:
+            if doc.doc_id in selected_ids or used + doc.token_count > budget:
                 continue
             gain = self.objective.marginal_gain(doc, covered)
             if gain > 0:
-                density = gain / doc.token_count
-                heapq.heappush(heap, (-density, doc.doc_id, doc, True))
+                heapq.heappush(
+                    heap, (-(gain / doc.token_count), doc.doc_id, doc)
+                )
 
         while heap:
-            neg_density, _, doc, is_current = heapq.heappop(heap)
-
+            _, _, doc = heapq.heappop(heap)
             if used + doc.token_count > budget:
                 continue
 
-            if is_current:
-                selected.append(doc)
-                used += doc.token_count
-                covered |= self.universe.doc_concepts.get(doc.doc_id, set())
-                # Invalidate all remaining entries
-                new_heap = []
-                for item in heap:
-                    _, _, d, _ = item
-                    if used + d.token_count <= budget:
-                        gain = self.objective.marginal_gain(d, covered)
-                        if gain > 0:
-                            density = gain / d.token_count
-                            new_heap.append((-density, d.doc_id, d, True))
-                heap = new_heap
-                heapq.heapify(heap)
-            else:
-                gain = self.objective.marginal_gain(doc, covered)
-                if gain > 0 and used + doc.token_count <= budget:
-                    density = gain / doc.token_count
-                    heapq.heappush(heap, (-density, doc.doc_id, doc, True))
+            gain = self.objective.marginal_gain(doc, covered)
+            if gain <= 0:
+                continue
+            updated = (-(gain / doc.token_count), doc.doc_id, doc)
+
+            if heap and updated[:2] > heap[0][:2]:
+                heapq.heappush(heap, updated)
+                continue
+
+            selected.append(doc)
+            used += doc.token_count
+            covered |= self.universe.doc_concepts.get(
+                doc.doc_id, frozenset()
+            )
 
         return selected

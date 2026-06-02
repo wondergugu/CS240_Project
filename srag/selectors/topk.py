@@ -1,19 +1,22 @@
-"""Top-k baseline: select documents by relevance score until budget is filled."""
+"""Top-k baseline: pack candidates in descending retrieval relevance order."""
 
 from ..types import Document
+from ..utils import validate_budget, validate_candidates
 
 
 class TopKSelector:
-
     def select(
         self, candidates: list[Document], budget: int
     ) -> list[Document]:
-        sorted_docs = sorted(
-            candidates, key=lambda d: d.relevance_score, reverse=True
+        validate_budget(budget)
+        documents = validate_candidates(candidates)
+        ranked = sorted(
+            documents, key=lambda doc: (-doc.relevance_score, doc.doc_id)
         )
-        selected = []
+
+        selected: list[Document] = []
         used = 0
-        for doc in sorted_docs:
+        for doc in ranked:
             if used + doc.token_count <= budget:
                 selected.append(doc)
                 used += doc.token_count
