@@ -51,6 +51,11 @@ MAX_NEW_TOKENS = {"eli5": 512, "hotpotqa": 192, "sist": 128}
 SHORT_ANSWER_DATASETS = ("hotpotqa", "sist")
 LONG_FORM_DATASETS = ("eli5",)
 
+# sist has no human-labeled QA: a silver pool is generated once by a local model
+# reading the sist corpus (rag/preprocess/sist_silver.py), then sampled per run.
+SIST_QA_POOL = 200
+SIST_QA_PATH = DATA_DIR / "sist" / "qa_silver.jsonl"
+
 # Selection / retrieval defaults (paper §4.1).
 DEFAULT_BUDGET = 4096  # context budget measured in generator tokens
 TOP_N = 200            # retrieved candidate-pool size per query

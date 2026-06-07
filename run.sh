@@ -25,10 +25,26 @@ DEVICE="${DEVICE:-cuda:0}"      # 唯一的卡开关:cuda:0 / cuda:1 / cpu。改
 CORPUS_PAGES="${CORPUS_PAGES:-1000}"
 CORPUS_DIR="${CORPUS_DIR:-corpus/${DATASET}}"
 
+# sist-only: silver QA pool. sist has no labeled QA, so a pool is generated once
+# by a local model (Prometheus2 by default; smoke uses the small gen model) and
+# then reused/sampled by every run. See record.md for the rationale + caveats.
+if [ "${SMOKE}" = "1" ]; then
+  SIST_QA_MODEL="${SIST_QA_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}"
+  SIST_QA_POOL="${SIST_QA_POOL:-20}"
+else
+  SIST_QA_MODEL="${SIST_QA_MODEL:-prometheus-eval/prometheus-7b-v2.0}"
+  SIST_QA_POOL="${SIST_QA_POOL:-200}"
+fi
+
 # -------- 1. build the retrieval corpus if missing --------
 if [ ! -s "${CORPUS_DIR}/passages.jsonl" ]; then
-  echo "[run.sh] building ${CORPUS_DIR} from KILT Wikipedia (${CORPUS_PAGES} pages)"
-  python3 -c "from rag.corpus import build_kilt_corpus; build_kilt_corpus('${CORPUS_DIR}', max_pages=${CORPUS_PAGES})"
+  if [ "${DATASET}" = "sist" ]; then
+    echo "[run.sh] building ${CORPUS_DIR} from local data/sist chunks (no network)"
+    python3 -c "from rag.corpus import build_sist_corpus; n,_=build_sist_corpus('${CORPUS_DIR}'); print('[run.sh] sist passages:', n)"
+  else
+    echo "[run.sh] building ${CORPUS_DIR} from KILT Wikipedia (${CORPUS_PAGES} pages)"
+    python3 -c "from rag.corpus import build_kilt_corpus; build_kilt_corpus('${CORPUS_DIR}', max_pages=${CORPUS_PAGES})"
+  fi
 fi
 
 # -------- 1.5 GPU 可见性自愈(让 DEVICE 成为唯一开关)--------
@@ -58,6 +74,19 @@ if [[ "${DEVICE}" == cuda:* ]]; then
   fi
 elif [[ "${DEVICE}" == "cuda" ]]; then
   unset CUDA_VISIBLE_DEVICES 2>/dev/null || true   # 用全部可见卡,交给 torch 选默认
+fi
+
+# -------- 1.6 sist: build the silver QA pool if missing (needs the GPU) --------
+# Runs after GPU pinning so the generator uses the same RUN_DEVICE. sist only.
+if [ "${DATASET}" = "sist" ] && [ ! -s "data/sist/qa_silver.jsonl" ]; then
+  [ "${SMOKE}" = "1" ] && export HF_HUB_OFFLINE=1   # smoke models are pre-downloaded
+  echo "[run.sh] building data/sist/qa_silver.jsonl with ${SIST_QA_MODEL} (pool=${SIST_QA_POOL})"
+  python3 -m rag.preprocess.sist_silver \
+    --corpus-dir "${CORPUS_DIR}" \
+    --gen-model "${SIST_QA_MODEL}" \
+    --device "${RUN_DEVICE}" \
+    --pool "${SIST_QA_POOL}" \
+    --seed "${SEED}"
 fi
 
 # -------- 2. run the evaluation --------

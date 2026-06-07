@@ -16,7 +16,7 @@ from rag.recorder import RunRecorder
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", choices=("eli5",), default="eli5")
+    parser.add_argument("--dataset", choices=("eli5", "sist"), default="eli5")
     parser.add_argument("--methods", nargs="+", default=list(config.METHODS))
     parser.add_argument("--num-samples", type=int, default=50)
     parser.add_argument("--budget", type=int, default=config.DEFAULT_BUDGET)
@@ -38,7 +38,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retriever")
     parser.add_argument("--judge-model")
     parser.add_argument("--bertscore-model")
-    parser.add_argument("--corpus-dir", default=str(config.CORPUS_DIR / "eli5"))
+    parser.add_argument(
+        "--corpus-dir",
+        default=None,
+        help="Defaults to corpus/<dataset> when omitted.",
+    )
     parser.add_argument("--output-dir", default=str(config.CKPT_DIR))
     parser.add_argument("--run-name", default=None)
     parser.add_argument(
@@ -62,6 +66,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.corpus_dir is None:
+        args.corpus_dir = str(config.CORPUS_DIR / args.dataset)
     models = config.model_set(args.smoke)
     for key, value in (
         ("retriever", args.retriever),
@@ -128,11 +134,11 @@ def main() -> None:
         }
     )
 
-    from rag.pipeline import run_eli5
+    from rag.pipeline import run_eli5, run_sist
 
     device = resolve_device(args.device)  # "cuda:0" by default; CPU if no GPU
 
-    rows, summary = run_eli5(
+    pipeline_kwargs = dict(
         num_samples=args.num_samples,
         methods=args.methods,
         budget=args.budget,
@@ -144,15 +150,24 @@ def main() -> None:
         seed=args.seed,
         device=device,
     )
+    # Short-answer datasets (sist) report EM/F1; long-form (eli5) ROUGE-L/BERTScore.
+    if args.dataset == "sist":
+        rows, summary = run_sist(**pipeline_kwargs)
+        metric_cols = (("em", "EM"), ("f1", "F1"))
+    else:
+        rows, summary = run_eli5(**pipeline_kwargs)
+        metric_cols = (("rougeL", "rougeL"), ("bertscore", "BERTScore"))
     recorder.save_results(rows)
     recorder.save_summary(summary)
 
-    print(f"\n=== ELI5 results ({len(rows)} rows) -> {recorder.run_dir} ===")
-    print(f"{'method':18} {'rougeL':>8} {'BERTScore':>10} {'docs':>6} {'tokens':>8} {'ms':>8}")
+    print(f"\n=== {args.dataset.upper()} results ({len(rows)} rows) -> {recorder.run_dir} ===")
+    header = f"{'method':18}" + "".join(f"{label:>10}" for _, label in metric_cols)
+    print(header + f"{'docs':>7}{'tokens':>9}{'ms':>9}")
     for s in summary:
+        cells = "".join(f"{s.get(key, 0.0):10.4f}" for key, _ in metric_cols)
         print(
-            f"{s['method']:18} {s['rougeL']:8.4f} {s['bertscore']:10.4f} "
-            f"{s['avg_docs']:6.1f} {s['avg_cost_tokens']:8.1f} {s['avg_latency_ms']:8.1f}"
+            f"{s['method']:18}{cells}"
+            f"{s['avg_docs']:7.1f}{s['avg_cost_tokens']:9.1f}{s['avg_latency_ms']:9.1f}"
         )
 
     need_srag = "srag" in args.methods

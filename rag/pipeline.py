@@ -17,6 +17,7 @@ from .corpus import TorchCorpusIndex, load_passages
 from .device import resolve_device
 from .generator import LocalGenerator
 from .preprocess.eli5 import load_eli5_qa
+from .preprocess.sist import load_sist_qa
 from .retriever import BGERetriever
 from .selection import Candidate, build_documents, select
 
@@ -56,7 +57,13 @@ def run_eli5(
     """Run the ELI5 evaluation and return (per-instance rows, summary rows)."""
     device = resolve_device(device)  # honor "cuda:0" etc., fall back to CPU
     retriever = BGERetriever(model_set["retriever"], device=device)
-    index = TorchCorpusIndex(load_passages(corpus_dir), retriever, device=device)
+    index = TorchCorpusIndex(
+        load_passages(corpus_dir),
+        retriever,
+        device=device,
+        cache_dir=corpus_dir,
+        cache_key=model_set["retriever"],
+    )
     generator = LocalGenerator(model_set["generator"], device=device)
     examples = load_eli5_qa(num_samples=num_samples, seed=seed)
     max_new_tokens = config.MAX_NEW_TOKENS["eli5"]
@@ -119,7 +126,89 @@ def run_eli5(
     return rows, _summarize(rows, methods)
 
 
-def _summarize(rows: list[dict], methods: Sequence[str]) -> list[dict]:
+def run_sist(
+    *,
+    num_samples: int,
+    methods: Sequence[str],
+    budget: int,
+    model_set: dict[str, str],
+    corpus_dir: str,
+    top_n: int = 200,
+    top_l: int = 20,
+    mmr_lambda: float = 0.5,
+    seed: int = 42,
+    device: str | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Run the sist evaluation and return (per-instance rows, summary rows).
+
+    sist is a short-answer dataset, so per-answer quality is Exact Match and
+    token F1 (no BERTScore). Retrieval is against the local sist corpus, whose
+    passage embeddings are cached on disk (see TorchCorpusIndex).
+    """
+    device = resolve_device(device)
+    retriever = BGERetriever(model_set["retriever"], device=device)
+    index = TorchCorpusIndex(
+        load_passages(corpus_dir),
+        retriever,
+        device=device,
+        cache_dir=corpus_dir,
+        cache_key=model_set["retriever"],
+    )
+    generator = LocalGenerator(model_set["generator"], device=device)
+    examples = load_sist_qa(num_samples=num_samples, seed=seed)
+    max_new_tokens = config.MAX_NEW_TOKENS["sist"]
+
+    rows: list[dict] = []
+    for example in examples:
+        retrieved = index.retrieve(example.question, top_n=top_n)
+        if not retrieved:
+            continue
+        candidates = [
+            Candidate(p["pid"], _passage_text(p), (p["score"] + 1.0) / 2.0)
+            for p in retrieved
+        ]
+        documents = build_documents(candidates, generator.count_tokens)
+        similarity = (
+            _make_similarity(retriever, documents) if "mmr" in methods else None
+        )
+        reference = max(example.references, key=len)
+
+        for method in methods:
+            started = time.perf_counter()
+            selected = select(
+                method,
+                documents,
+                budget,
+                top_l=top_l,
+                similarity=similarity,
+                mmr_lambda=mmr_lambda,
+            )
+            answer = generator.generate(
+                example.question, [d.text for d in selected], max_new_tokens
+            )
+            rows.append(
+                {
+                    "qid": example.qid,
+                    "question": example.question,
+                    "method": method,
+                    "prediction": answer,
+                    "reference": reference,
+                    "em": round(metrics.exact_match(answer, list(example.references)), 4),
+                    "f1": round(metrics.token_f1(answer, list(example.references)), 4),
+                    "n_docs": len(selected),
+                    "cost_tokens": sum(d.token_count for d in selected),
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                }
+            )
+
+    return rows, _summarize(rows, methods, metric_keys=("em", "f1"))
+
+
+def _summarize(
+    rows: list[dict],
+    methods: Sequence[str],
+    metric_keys: Sequence[str] = ("rougeL", "bertscore"),
+) -> list[dict]:
     summary: list[dict] = []
     for method in methods:
         method_rows = [r for r in rows if r["method"] == method]
@@ -129,15 +218,11 @@ def _summarize(rows: list[dict], methods: Sequence[str]) -> list[dict]:
         def mean(key: str) -> float:
             return statistics.fmean(r.get(key, 0.0) for r in method_rows)
 
-        summary.append(
-            {
-                "method": method,
-                "n": len(method_rows),
-                "rougeL": round(mean("rougeL"), 4),
-                "bertscore": round(mean("bertscore"), 4),
-                "avg_docs": round(mean("n_docs"), 2),
-                "avg_cost_tokens": round(mean("cost_tokens"), 1),
-                "avg_latency_ms": round(mean("latency_ms"), 1),
-            }
-        )
+        entry = {"method": method, "n": len(method_rows)}
+        for key in metric_keys:
+            entry[key] = round(mean(key), 4)
+        entry["avg_docs"] = round(mean("n_docs"), 2)
+        entry["avg_cost_tokens"] = round(mean("cost_tokens"), 1)
+        entry["avg_latency_ms"] = round(mean("latency_ms"), 1)
+        summary.append(entry)
     return summary
