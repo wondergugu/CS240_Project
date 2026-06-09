@@ -14,10 +14,10 @@ from .config import CKPT_DIR
 def collect(ckpt_dir: str | Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     metric_frames: list[pd.DataFrame] = []
     judge_frames: list[pd.DataFrame] = []
-    for run_dir in sorted(Path(ckpt_dir).glob("*/*")):
-        config_path = run_dir / "config.json"
-        if not config_path.exists():
-            continue
+    # Depth-agnostic: works for the flat ckpt/<model>_<hash>/ layout and the
+    # legacy ckpt/<model>/<run>/ nesting alike.
+    for config_path in sorted(Path(ckpt_dir).rglob("config.json")):
+        run_dir = config_path.parent
         config = json.loads(config_path.read_text())
         for filename, frames in (
             ("metrics_summary.csv", metric_frames),

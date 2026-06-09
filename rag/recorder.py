@@ -27,8 +27,18 @@ def _slug(name: str) -> str:
 
 
 class RunRecorder:
-    def __init__(self, ckpt_dir: str | Path, gen_model: str, run_name: str):
-        self.run_dir = Path(ckpt_dir) / _slug(gen_model) / run_name
+    def __init__(
+        self,
+        ckpt_dir: str | Path,
+        gen_model: str,
+        run_name: str,
+        group_by_model: bool = True,
+    ):
+        # group_by_model=True keeps the legacy ckpt/<model>/<run> nesting; False
+        # writes a single flat ckpt/<run> dir (callers that fold the model into
+        # run_name use this so the leaf is e.g. <model-slug>_<settings-hash>).
+        base = Path(ckpt_dir)
+        self.run_dir = (base / _slug(gen_model) / run_name) if group_by_model else (base / run_name)
         self.run_dir.mkdir(parents=True, exist_ok=True)
 
     def save_config(self, config: dict[str, Any]) -> Path:
