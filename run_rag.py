@@ -87,14 +87,19 @@ def parse_args() -> argparse.Namespace:
 
 def _dataset_spec(dataset: str) -> dict:
     """Per-dataset QA loader, metric functions, summary keys, and print columns."""
-    if dataset == "sist":  # short-answer: EM / token-F1, no BERTScore
+    if dataset == "sist":  # short-answer: EM / containment-EM / token-F1, no BERTScore
         return {
             "loader": load_sist_qa,
-            "metric_fns": {"em": metrics.exact_match, "f1": metrics.token_f1},
-            "keys": ("em", "f1"),
-            "cols": (("em", "EM"), ("f1", "F1")),
+            "metric_fns": {
+                "em": metrics.exact_match,
+                "em_in": metrics.exact_match_contains,
+                "f1": metrics.token_f1,
+            },
+            "keys": ("em", "em_in", "f1"),
+            "cols": (("em", "EM"), ("em_in", "EM-in"), ("f1", "F1")),
             "max_new_tokens": config.MAX_NEW_TOKENS["sist"],
             "bertscore": False,
+            "short_answer": True,
         }
     return {  # long-form: ROUGE-L + BERTScore
         "loader": load_eli5_qa,
@@ -103,6 +108,7 @@ def _dataset_spec(dataset: str) -> dict:
         "cols": (("rougeL", "rougeL"), ("bertscore", "BERTScore")),
         "max_new_tokens": config.MAX_NEW_TOKENS["eli5"],
         "bertscore": True,
+        "short_answer": False,
     }
 
 
@@ -225,6 +231,7 @@ def main() -> None:
                 mmr_lambda=ml,
                 max_new_tokens=spec["max_new_tokens"],
                 metric_fns=spec["metric_fns"],
+                short_answer=spec.get("short_answer", False),
             )
             if spec["bertscore"]:
                 add_bertscore(rows, models)

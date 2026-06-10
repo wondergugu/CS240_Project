@@ -28,6 +28,43 @@ def normalize_answer(text: str) -> str:
     return _WHITESPACE.sub(" ", no_articles).strip()
 
 
+def _is_cjk(ch: str) -> bool:
+    """True for CJK/kana/hangul/fullwidth code points (no whitespace tokenizer)."""
+    o = ord(ch)
+    return (
+        0x3000 <= o <= 0x303F  # CJK symbols & punctuation
+        or 0x3040 <= o <= 0x30FF  # hiragana + katakana
+        or 0x3400 <= o <= 0x4DBF  # CJK unified ideographs, ext. A
+        or 0x4E00 <= o <= 0x9FFF  # CJK unified ideographs
+        or 0xAC00 <= o <= 0xD7AF  # hangul syllables
+        or 0xF900 <= o <= 0xFAFF  # CJK compatibility ideographs
+        or 0xFF00 <= o <= 0xFFEF  # halfwidth/fullwidth forms
+    )
+
+
+def _tokenize(text: str) -> list[str]:
+    """Normalize, then split on whitespace with each CJK character its own token.
+
+    English/whitespace text tokenizes exactly like `.split()`; CJK answers (which
+    carry no spaces and would otherwise collapse to a single token) split per
+    character, so EM/F1 work on Chinese/Japanese/Korean gold answers too.
+    """
+    tokens: list[str] = []
+    for chunk in normalize_answer(text).split():
+        buffer = ""
+        for ch in chunk:
+            if _is_cjk(ch):
+                if buffer:
+                    tokens.append(buffer)
+                    buffer = ""
+                tokens.append(ch)
+            else:
+                buffer += ch
+        if buffer:
+            tokens.append(buffer)
+    return tokens
+
+
 def _gold_list(golds: str | Sequence[str]) -> list[str]:
     if isinstance(golds, str):
         return [golds] if golds else []
@@ -41,6 +78,27 @@ def exact_match(prediction: str, golds: str | Sequence[str]) -> float:
         return 0.0
     pred = normalize_answer(prediction)
     return max(1.0 if pred == normalize_answer(g) else 0.0 for g in references)
+
+
+def exact_match_contains(prediction: str, golds: str | Sequence[str]) -> float:
+    """Containment EM: 1.0 if any non-empty normalized gold is a substring of the
+    normalized prediction, else 0.0.
+
+    Unlike `exact_match` (whole-string equality), this credits a correct short
+    answer that the generator wraps inside a longer sentence — the dominant
+    failure mode on free-form short-answer datasets like sist. The substring test
+    needs no whitespace, so it also works for CJK gold answers. Empty golds are
+    skipped (an empty string is a substring of everything).
+    """
+    references = _gold_list(golds)
+    if not references:
+        return 0.0
+    pred = normalize_answer(prediction)
+    for gold in references:
+        norm_gold = normalize_answer(gold)
+        if norm_gold and norm_gold in pred:
+            return 1.0
+    return 0.0
 
 
 def _f1(pred_tokens: list[str], gold_tokens: list[str]) -> float:
@@ -59,8 +117,8 @@ def token_f1(prediction: str, golds: str | Sequence[str]) -> float:
     references = _gold_list(golds)
     if not references:
         return 0.0
-    pred_tokens = normalize_answer(prediction).split()
-    return max(_f1(pred_tokens, normalize_answer(g).split()) for g in references)
+    pred_tokens = _tokenize(prediction)
+    return max(_f1(pred_tokens, _tokenize(g)) for g in references)
 
 
 _ROUGE_SCORER: rouge_scorer.RougeScorer | None = None

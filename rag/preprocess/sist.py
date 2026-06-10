@@ -17,6 +17,14 @@ from ..config import DATA_DIR
 from .eli5 import QAExample
 
 QA_FILENAME = "qa_silver.jsonl"
+QA_CLEAN_FILENAME = "qa_silver_clean.jsonl"
+
+
+def _resolve_pool_path(data_dir: str | Path | None) -> Path:
+    """Prefer the cleaned pool (rag.preprocess.sist_clean) when it exists."""
+    base = Path(data_dir or DATA_DIR) / "sist"
+    clean = base / QA_CLEAN_FILENAME
+    return clean if clean.is_file() else base / QA_FILENAME
 
 
 def _references(record: dict) -> list[str]:
@@ -41,7 +49,7 @@ def load_sist_qa(
     run is reproducible and the expensive generation step is decoupled from the
     per-run sampling.
     """
-    path = Path(qa_path) if qa_path else Path(data_dir or DATA_DIR) / "sist" / QA_FILENAME
+    path = Path(qa_path) if qa_path else _resolve_pool_path(data_dir)
     if not path.is_file():
         raise FileNotFoundError(
             f"no sist silver QA at {path}; build it with rag.preprocess.sist_silver"

@@ -16,14 +16,28 @@ _INSTRUCTIONS = (
     "unsupported claims."
 )
 
+# Short-answer mode (sist / factoid QA): force an extractive span, matching the
+# silver-answer shape (rag/preprocess/sist_silver.py) so Exact Match can fire.
+_SHORT_INSTRUCTIONS = (
+    "Answer with ONLY the exact answer span copied from the passages — a name, "
+    "date, number, place, or short noun phrase, as few words as possible. Do not "
+    "write a full sentence, do not explain, do not add punctuation or lists."
+)
 
-def build_user_prompt(question: str, passages: Sequence[str]) -> str:
-    """Paper Appendix B.1 user prompt: question + numbered passages + rules."""
+
+def build_user_prompt(
+    question: str, passages: Sequence[str], short: bool = False
+) -> str:
+    """Paper Appendix B.1 user prompt: question + numbered passages + rules.
+
+    `short=True` swaps in the extractive short-answer instructions for
+    short-answer datasets (sist), otherwise the default synthesis instructions.
+    """
     numbered = "\n".join(f"{i}. {p}" for i, p in enumerate(passages, start=1))
     return (
         f"Question: {question}\n"
         f"Passages:\n{numbered}\n"
-        f"Instructions: {_INSTRUCTIONS}"
+        f"Instructions: {_SHORT_INSTRUCTIONS if short else _INSTRUCTIONS}"
     )
 
 
@@ -93,9 +107,17 @@ class LocalGenerator:
         return self.tokenizer.decode(generated, skip_special_tokens=True).strip()
 
     def generate(
-        self, question: str, passages: Sequence[str], max_new_tokens: int
+        self,
+        question: str,
+        passages: Sequence[str],
+        max_new_tokens: int,
+        short: bool = False,
     ) -> str:
-        """Answer a question from selected passages (paper B.1 prompt, greedy)."""
+        """Answer a question from selected passages (paper B.1 prompt, greedy).
+
+        `short=True` uses the extractive short-answer instructions (sist).
+        """
         return self.chat(
-            build_user_prompt(question, passages), max_new_tokens=max_new_tokens
+            build_user_prompt(question, passages, short=short),
+            max_new_tokens=max_new_tokens,
         )

@@ -28,3 +28,19 @@ def test_recorder_writes_config_and_results(tmp_path):
         rows = list(csv.DictReader(handle))
     assert [r["qid"] for r in rows] == ["q0", "q1"]
     assert json.loads((run_dir / "best_params.json").read_text())["mmr_lambda"] == 0.5
+
+
+def test_flat_layout_omits_model_parent(tmp_path):
+    # group_by_model=False writes a single flat folder named by run_name (the
+    # caller folds the model + settings hash into run_name) directly under ckpt/.
+    rec = RunRecorder(
+        tmp_path,
+        "Qwen/Qwen2.5-0.5B-Instruct",
+        "qwen-qwen2.5-0.5b-instruct_a1b2c3d4",
+        group_by_model=False,
+    )
+    rec.save_config({"dataset": "sist"})
+    assert rec.run_dir == tmp_path / "qwen-qwen2.5-0.5b-instruct_a1b2c3d4"
+    assert (rec.run_dir / "config.json").exists()
+    # no model-slug parent directory was created
+    assert not (tmp_path / "qwen-qwen2.5-0.5b-instruct").exists()

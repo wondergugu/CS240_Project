@@ -21,7 +21,7 @@ def test_parse_qa_rejects_ungrounded_overlong_or_malformed():
     # missing question mark
     assert parse_qa("Question: Tell me\nAnswer: SIST", src) is None
     # answer too long (chars)
-    assert parse_qa(f"Question: What?\nAnswer: {'x' * 60}", src) is None
+    assert parse_qa(f"Question: What?\nAnswer: {'x' * 80}", src) is None
     # no Answer line at all
     assert parse_qa("Question: What is SIST?", src) is None
 

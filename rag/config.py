@@ -44,8 +44,10 @@ BERTSCORE_LAYERS = {
     "roberta-large": 17,
 }
 
-# Per-dataset generation length (paper Appendix B.1).
-MAX_NEW_TOKENS = {"eli5": 512, "hotpotqa": 192, "sist": 128}
+# Per-dataset generation length (paper Appendix B.1). sist is short-answer
+# extractive (see generator._SHORT_INSTRUCTIONS), so it is capped tight so the
+# model emits the answer span rather than a full paragraph that breaks EM.
+MAX_NEW_TOKENS = {"eli5": 512, "hotpotqa": 192, "sist": 32}
 
 # Short-answer datasets use EM/F1; long-form datasets use ROUGE-L/BERTScore.
 SHORT_ANSWER_DATASETS = ("hotpotqa", "sist")
@@ -55,6 +57,9 @@ LONG_FORM_DATASETS = ("eli5",)
 # reading the sist corpus (rag/preprocess/sist_silver.py), then sampled per run.
 SIST_QA_POOL = 200
 SIST_QA_PATH = DATA_DIR / "sist" / "qa_silver.jsonl"
+# Cleaned pool (rag/preprocess/sist_clean.py): drops PDF-glyph/formula garbage and
+# re-verifies grounding, keeping CJK answers. Loaders prefer it when present.
+SIST_QA_CLEAN_PATH = DATA_DIR / "sist" / "qa_silver_clean.jsonl"
 
 # Selection / retrieval defaults (paper §4.1).
 DEFAULT_BUDGET = 4096  # context budget measured in generator tokens

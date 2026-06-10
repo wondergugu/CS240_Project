@@ -78,6 +78,7 @@ def evaluate(
     mmr_lambda: float,
     max_new_tokens: int,
     metric_fns: dict[str, MetricFn],
+    short_answer: bool = False,
 ) -> list[dict]:
     """Run one (already-loaded) config over `examples`; return per-instance rows.
 
@@ -112,7 +113,10 @@ def evaluate(
                 mmr_lambda=mmr_lambda,
             )
             answer = generator.generate(
-                example.question, [d.text for d in selected], max_new_tokens
+                example.question,
+                [d.text for d in selected],
+                max_new_tokens,
+                short=short_answer,
             )
             row = {
                 "qid": example.qid,
@@ -235,6 +239,11 @@ def run_sist(
         top_l=top_l,
         mmr_lambda=mmr_lambda,
         max_new_tokens=config.MAX_NEW_TOKENS["sist"],
-        metric_fns={"em": metrics.exact_match, "f1": metrics.token_f1},
+        metric_fns={
+            "em": metrics.exact_match,
+            "em_in": metrics.exact_match_contains,
+            "f1": metrics.token_f1,
+        },
+        short_answer=True,
     )
-    return rows, summarize(rows, methods, metric_keys=("em", "f1"))
+    return rows, summarize(rows, methods, metric_keys=("em", "em_in", "f1"))
