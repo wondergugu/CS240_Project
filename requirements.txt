@@ -6,9 +6,38 @@
 # - nltk.stem.WordNetLemmatizer
 nltk==3.9.4
 
+# Parquet reader used by demo dataset loaders for the paper datasets:
+# Natural Questions, ELI5, and HotpotQA.
+pyarrow==16.1.0
+
 # Test runner used for the test modules under tests/.
 pytest==9.0.3
 
 # After installation, run `python3 setup_nltk.py` to download the NLTK data
 # resources required by the runtime dependency:
 # punkt_tab, averaged_perceptron_tagger_eng, wordnet, and stopwords.
+
+# --- Interactive S-RAG demo (rag/infer.py + app.py) ---
+# streamlit is intentionally NOT a base dependency: it hard-requires anyio>=4,
+# while this env's jupyter-server (jupyterlab) requires anyio<4, so installing it
+# into the base env would break the notebook kernel. The demo runs in an ISOLATED
+# venv instead — see requirements-streamlit.txt and `bash run_app.sh`. That venv
+# is created with --system-site-packages, so it reuses this base
+# torch / transformers / sentence-transformers stack (no 30GB re-download) and
+# only adds streamlit + anyio>=4 locally. All inference stays local; no API.
+
+# Streamlit demo dependencies — installed ONLY into the isolated .venv-streamlit
+# (see run_app.sh), never into the base env.
+#
+# Why isolated: streamlit==1.58.0 hard-requires anyio>=4, but the base env's
+# jupyter-server 1.24 / jupyterlab 3.2.5 require anyio<4. The two cannot share one
+# anyio version, so streamlit lives in its own venv with anyio>=4 while the base
+# env keeps anyio 3.7.1 (jupyter stays working). The venv is created with
+# --system-site-packages, so torch / transformers / sentence-transformers / numpy
+# / pandas / pyarrow / protobuf are REUSED from the base env (not reinstalled);
+# only streamlit + its pure-python web stack (anyio>=4, starlette, uvicorn, altair,
+# ...) are added locally. All inference stays local / open-weight; no commercial API.
+#
+# Usage:  bash run_app.sh        (creates/repairs the venv, then launches the app)
+streamlit==1.58.0
+

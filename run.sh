@@ -22,7 +22,7 @@ export TOKENIZERS_PARALLELISM=false
 DATASET="${DATASET:-eli5 sist}"
 NUM_SAMPLES="${NUM_SAMPLES:-100}"
 BUDGET="${BUDGET:-4096}"
-TOP_N="${TOP_N:-200}"
+TOP_N="${TOP_N:-100}"        # 200/100
 TOP_L="${TOP_L:-20}"
 MMR_LAMBDA="${MMR_LAMBDA:-0.7}"
 SEED="${SEED:-42}"
@@ -106,6 +106,16 @@ for ds in ${DATASET}; do
       --pool "${SIST_QA_POOL}" \
       --seed "${SIST_QA_SEED}" \
       ${SIST_QA_MAX_ATTEMPTS:+--max-attempts "${SIST_QA_MAX_ATTEMPTS}"}
+  fi
+  # Clean the silver pool once (drops PDF-glyph/formula garbage, re-verifies
+  # grounding, keeps CJK). load_sist_qa prefers qa_silver_clean.jsonl when present.
+  if [ "${ds}" = "sist" ] && [ -s "data/sist/qa_silver.jsonl" ] && [ ! -s "data/sist/qa_silver_clean.jsonl" ]; then
+    echo "[run.sh] cleaning sist silver pool -> data/sist/qa_silver_clean.jsonl"
+    python3 -m rag.preprocess.sist_clean \
+      --in "data/sist/qa_silver.jsonl" \
+      --out "data/sist/qa_silver_clean.jsonl" \
+      --corpus-dir "${CORPUS_DIR}" \
+      ${SIST_DROP_CJK:+--drop-cjk}
   fi
 done
 
